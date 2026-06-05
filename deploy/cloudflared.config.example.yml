@@ -1,0 +1,26 @@
+# Cloudflare Tunnel config for mcp-gemini-deep-research.
+#
+# Copy to /etc/cloudflared/config.yml and replace:
+#   REPLACE_WITH_TUNNEL_ID — UUID returned when the tunnel was created
+#   REPLACE_WITH_HOSTNAME  — the public hostname you CNAME'd to <TUNNEL_ID>.cfargotunnel.com
+#
+# Credentials file (/etc/cloudflared/<TUNNEL_ID>.json) is created by `cloudflared
+# tunnel create` (CLI) or by the Cloudflare API when the tunnel is created with
+# config_src=local. Format:
+#
+#   {
+#     "AccountTag":   "<CF_ACCOUNT_ID>",
+#     "TunnelID":     "<TUNNEL_UUID>",
+#     "TunnelName":   "<NAME>",
+#     "TunnelSecret": "<BASE64_SECRET_FROM_API>"
+#   }
+#
+# chmod 600 the credentials file.
+
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: /etc/cloudflared/REPLACE_WITH_TUNNEL_ID.json
+
+ingress:
+  - hostname: REPLACE_WITH_HOSTNAME
+    service: http://127.0.0.1:8000
+  - service: http_status:404

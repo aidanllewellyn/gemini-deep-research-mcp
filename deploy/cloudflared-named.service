@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Named Tunnel for MCP (mcp-gemini-deep-research)
+After=network.target mcp-gemini-deep-research.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared --config /etc/cloudflared/config.yml tunnel run
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# Caddyfile for mcp-gemini-deep-research
+#
+# Replace mcp.yourdomain.com with your actual domain.
+# Auth is handled by fastmcp's Bearer token middleware — Caddy just terminates TLS.
+#
+# Deploy:
+#   sudo cp Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+mcp.yourdomain.com {
+    reverse_proxy 127.0.0.1:8000 {
+        # Streamable HTTP needs these for long-running responses
+        flush_interval -1
+        transport http {
+            read_timeout 0
+            write_timeout 0
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+
+    encode gzip
+    log {
+        output file /var/log/caddy/mcp-access.log
+        format json
+    }
+}

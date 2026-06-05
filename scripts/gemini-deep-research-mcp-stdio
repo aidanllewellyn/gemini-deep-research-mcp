@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+
+URL = os.environ.get("GEMINI_DEEP_RESEARCH_MCP_URL", "")
+AUTH = os.environ.get("GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION", "")
+
+
+def emit(message):
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def response_messages(content_type, body):
+    if not body:
+        return []
+    text = body.decode("utf-8", errors="replace")
+    if "text/event-stream" in (content_type or ""):
+        messages = []
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                data = line[5:].strip()
+                if data and data != "[DONE]":
+                    messages.append(json.loads(data))
+        return messages
+    return [json.loads(text)]
+
+
+def error_response(request_id, message):
+    if request_id is None:
+        return
+    emit({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": message}})
+
+
+def main():
+    if not URL:
+        sys.stderr.write("GEMINI_DEEP_RESEARCH_MCP_URL is not set\n")
+        return 1
+    if not AUTH:
+        sys.stderr.write("GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION is not set\n")
+        return 1
+
+    session_id = None
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            message = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            sys.stderr.write(f"invalid JSON from client: {exc}\n")
+            continue
+
+        request_id = message.get("id") if isinstance(message, dict) else None
+        headers = {
+            "Authorization": AUTH,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "curl/8.7.1",
+        }
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+
+        req = urllib.request.Request(
+            URL,
+            data=json.dumps(message, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                if resp.headers.get("mcp-session-id"):
+                    session_id = resp.headers.get("mcp-session-id")
+                body = resp.read()
+                if resp.status == 202:
+                    continue
+                for out in response_messages(resp.headers.get("content-type", ""), body):
+                    emit(out)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            error_response(request_id, f"HTTP {exc.code}: {body[:500]}")
+        except Exception as exc:
+            error_response(request_id, str(exc))
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

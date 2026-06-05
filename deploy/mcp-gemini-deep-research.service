@@ -1,0 +1,26 @@
+[Unit]
+Description=Gemini Deep Research MCP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gemini-deep-research-mcp
+EnvironmentFile=/opt/gemini-deep-research-mcp/.env
+ExecStart=/usr/bin/env uv run --directory /opt/gemini-deep-research-mcp python server.py
+Restart=on-failure
+RestartSec=5
+User=mcp
+Group=mcp
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/gemini-deep-research-mcp
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
