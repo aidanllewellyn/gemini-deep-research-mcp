@@ -52,6 +52,7 @@ $action wrapper: $target
 Add these variables to your local secret environment:
   export GEMINI_DEEP_RESEARCH_MCP_URL="$url"
   export GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION="Bearer <token>"
+  export GEMINI_DEEP_RESEARCH_MCP_TIMEOUT_SECONDS=300
 
 Codex/Claude command:
   /bin/bash -lc 'set -a; [ -f ~/.secrets.env ] && . ~/.secrets.env; set +a; exec $target'

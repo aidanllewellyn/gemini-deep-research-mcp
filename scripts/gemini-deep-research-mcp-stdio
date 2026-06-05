@@ -4,10 +4,12 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 
 
 URL = os.environ.get("GEMINI_DEEP_RESEARCH_MCP_URL", "")
 AUTH = os.environ.get("GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION", "")
+TIMEOUT_SECONDS = float(os.environ.get("GEMINI_DEEP_RESEARCH_MCP_TIMEOUT_SECONDS", "300"))
 
 
 def emit(message):
@@ -36,12 +38,26 @@ def error_response(request_id, message):
     emit({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": message}})
 
 
+def validate_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+        return
+    raise ValueError("GEMINI_DEEP_RESEARCH_MCP_URL must be https, except for localhost development")
+
+
 def main():
     if not URL:
         sys.stderr.write("GEMINI_DEEP_RESEARCH_MCP_URL is not set\n")
         return 1
     if not AUTH:
         sys.stderr.write("GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION is not set\n")
+        return 1
+    try:
+        validate_url(URL)
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
         return 1
 
     session_id = None
@@ -60,7 +76,7 @@ def main():
             "Authorization": AUTH,
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "curl/8.7.1",
+            "User-Agent": "gemini-deep-research-mcp-stdio/0.2.0",
         }
         if session_id:
             headers["Mcp-Session-Id"] = session_id
@@ -72,7 +88,7 @@ def main():
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
                 if resp.headers.get("mcp-session-id"):
                     session_id = resp.headers.get("mcp-session-id")
                 body = resp.read()
@@ -91,4 +107,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

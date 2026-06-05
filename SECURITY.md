@@ -26,9 +26,8 @@ Keep the Python service bound to `127.0.0.1` and publish through Cloudflare Tunn
 
 ## Local MCP Clients
 
-Use the stdio proxy in `scripts/gemini-deep-research-mcp-stdio`. Store `GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION` in a local secret environment or password manager. Do not put token values in MCP config files.
+Use the stdio proxy in `scripts/gemini-deep-research-mcp-stdio`. Store `GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION` in a local secret environment or password manager. Do not put token values in MCP config files. The proxy requires HTTPS for remote endpoints and allows plain HTTP only for localhost development.
 
 ## Data Retention
 
 Completed reports are persisted in SQLite when `MCP_DB_PATH` is set or when the default `data/jobs.db` path is used. Treat that database as private user data and keep it out of public repos.
-

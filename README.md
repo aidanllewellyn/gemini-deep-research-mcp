@@ -1,42 +1,44 @@
 # Gemini Deep Research MCP
 
-MCP server exposing Google Gemini Deep Research as async tools for Claude, Codex, and other MCP clients.
+![Python](https://img.shields.io/badge/python-%3E%3D3.11-3776ab)
+![FastMCP](https://img.shields.io/badge/FastMCP-Streamable_HTTP-2f6fed)
+![Auth](https://img.shields.io/badge/hosted_auth-Bearer_required-success)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-The project supports two deployment modes:
+Cost-aware MCP server that exposes Google Gemini Deep Research as safe async tools for Claude, Codex, and other MCP clients.
 
-- local stdio for development
-- hosted Streamable HTTP behind bearer auth for production
-
-The recommended hosted client shape is:
+The server turns Deep Research into an operational workflow: callers must explicitly choose a cost tier, reports are tracked as durable jobs, completed work can be searched/exported, and local agents can reach the service through a stable HTTPS endpoint without Tailscale, SSH port-forwards, browser login loops, or private-key runtime dependencies.
 
 ```text
-MCP client -> local stdio proxy -> HTTPS endpoint -> Cloudflare Tunnel -> 127.0.0.1 Gemini MCP service
+MCP client
+  -> local stdio HTTPS proxy
+  -> stable HTTPS endpoint
+  -> Cloudflare Tunnel or reverse proxy
+  -> 127.0.0.1 Gemini Deep Research MCP service
 ```
 
-No Tailscale session, local SSH port-forward, or local private SSH key is required for MCP startup.
+## What This Demonstrates
 
-## Tools
+- Hosted MCP over Streamable HTTP with bearer-auth public ingress.
+- Local stdio compatibility through a lightweight HTTPS proxy.
+- Explicit user confirmation before any paid Deep Research run.
+- Tier-aware cost controls for `standard` and `max`.
+- Cost-aware prompt contracts for screening, deep dives, outreach packs, competitive maps, and diligence.
+- Durable SQLite job history plus FTS5 search over completed reports.
+- Markdown, HTML, PDF, and DOCX export helpers.
+- Lazy Gemini client initialization: imports and tests stay side-effect light, production startup still validates `GEMINI_API_KEY`.
+- Zero-cost `ping` and metadata tools that do not call Gemini.
 
-| Tool | Purpose |
-| --- | --- |
-| `research_start` | Start an async Gemini Deep Research job after explicit tier confirmation. |
-| `research_check` | Poll a job and return the report when complete. |
-| `research_cancel` | Cancel a running job. |
-| `research_list` | Show recent in-memory jobs. |
-| `research_history` | Query persisted SQLite job history. |
-| `research_search` | Full-text search completed reports. |
-| `research_export` | Export reports as markdown, HTML, PDF, or DOCX. |
-| `research_stats` | Aggregate job counters. |
-| `ping` | Low-cost liveness check. |
+## One-Command Verification
 
-## Tier Routing
+```bash
+git clone https://github.com/aidanllewellyn/gemini-deep-research-mcp.git
+cd gemini-deep-research-mcp
+uv sync
+scripts/verify.sh
+```
 
-`research_start` refuses to run unless the caller has explicitly confirmed a tier:
-
-| Tier | Typical cost | Typical time | Use for |
-| --- | --- | --- | --- |
-| `standard` | about 0.30-1.00 USD | 2-4 min | briefs, monitoring, iterative research |
-| `max` | about 2.50-9.00 USD | 10-30 min | due diligence and high-stakes deep dives |
+`scripts/verify.sh` runs the unit test suite and, when remote MCP env vars are present, can also verify the hosted endpoint handshake.
 
 ## Quick Start
 
@@ -46,47 +48,168 @@ cp .env.example .env
 uv run python server.py
 ```
 
-For local development, keep `MCP_TRANSPORT=stdio`.
+For local development:
 
-For hosted use, set `MCP_TRANSPORT=http`, bind to `127.0.0.1`, and put Cloudflare Tunnel or a reverse proxy in front of the service. Set `MCP_AUTH_TOKEN` so HTTP clients must send `Authorization: Bearer <token>`.
+```text
+GEMINI_API_KEY=
+MCP_TRANSPORT=stdio
+```
+
+For hosted use:
+
+```text
+GEMINI_API_KEY=
+MCP_TRANSPORT=http
+MCP_HOST=127.0.0.1
+MCP_PORT=8000
+MCP_AUTH_TOKEN=<generated token>
+MCP_DB_PATH=./data/jobs.db
+```
+
+Hosted `/mcp` requests must include:
+
+```text
+Authorization: Bearer <token>
+```
 
 ## Client Install
 
-Install the stdio HTTPS proxy:
+Install the local stdio proxy:
 
 ```bash
 scripts/install-client.sh --url https://research.example.com/mcp
 ```
 
-Set local client secrets:
+Store local client auth in a secret environment or password manager:
 
 ```bash
 export GEMINI_DEEP_RESEARCH_MCP_URL="https://research.example.com/mcp"
 export GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION="Bearer <token>"
+export GEMINI_DEEP_RESEARCH_MCP_TIMEOUT_SECONDS=300
 ```
 
-Then configure an MCP client to run:
+Configure an MCP client to run:
 
 ```bash
 /bin/bash -lc 'set -a; [ -f ~/.secrets.env ] && . ~/.secrets.env; set +a; exec ~/.local/bin/gemini-deep-research-mcp-stdio'
 ```
 
-See [INSTALL.md](INSTALL.md) for full server, Cloudflare, and client setup.
+See [INSTALL.md](INSTALL.md) for full server, Cloudflare, systemd, Codex, Claude Code, and Claude Desktop setup.
 
-## Security
+## MCP Tools
 
-- `GEMINI_API_KEY` and `MCP_AUTH_TOKEN` are environment or secret-manager values.
-- The hosted HTTP endpoint enforces bearer auth through FastMCP.
-- The local stdio proxy reads auth from environment variables and does not store token values in MCP config.
-- Local SQLite history, logs, caches, `.env`, and tunnel credentials are ignored and must not be committed.
+| Tool | Purpose | Cost posture |
+| --- | --- | --- |
+| `research_start` | Start an async Deep Research job after explicit tier confirmation. | Paid call |
+| `research_check` | Poll a job and persist completed report/usage metadata. | Metadata/read call |
+| `research_cancel` | Cancel a running job when the SDK supports cancellation. | Control call |
+| `research_list` | Show recent in-memory jobs. | Zero Gemini cost |
+| `research_history` | Query persisted SQLite job history. | Zero Gemini cost |
+| `research_search` | Full-text search completed reports. | Zero Gemini cost |
+| `research_export` | Export reports as markdown, HTML, PDF, or DOCX. | Zero Gemini cost |
+| `research_stats` | Aggregate usage/cost metadata. | Zero Gemini cost |
+| `research_chain` | Walk previous-interaction chains for follow-up research. | Zero Gemini cost |
+| `ping` | Return liveness, tier map, and counters. | Zero Gemini cost |
+
+## Tier And Cost Controls
+
+`research_start` refuses to run until the caller has explicitly chosen a tier:
+
+| Tier | Typical cost | Typical time | Use for |
+| --- | --- | --- | --- |
+| `standard` | about 0.30-1.00 USD | 2-4 min | briefs, monitoring, first-pass screening |
+| `max` | about 2.50-9.00 USD | 10-30 min | due diligence, finalist validation, high-stakes decisions |
+
+The prompt wrapper can also apply budget profiles:
+
+| Profile | Behavior |
+| --- | --- |
+| `lean` | Smaller word/source/search caps for cheap screening. |
+| `balanced` | Default mode-specific caps. |
+| `thorough` | Higher caps for diligence without forcing Max. |
+| `exhaustive` | Requires explicit `max` confirmation before running. |
+
+## Example Tool Calls
+
+Start a screening report:
+
+```json
+{
+  "tool": "research_start",
+  "arguments": {
+    "prompt": "Compare three vendor options for an MCP web search stack.",
+    "tier": "standard",
+    "user_confirmed": true,
+    "research_mode": "screening",
+    "budget_profile": "balanced",
+    "word_cap": 1800,
+    "source_budget": {
+      "max_sources": 12,
+      "max_searches": 8
+    },
+    "decision_schema_required": true
+  }
+}
+```
+
+Poll the report:
+
+```json
+{
+  "tool": "research_check",
+  "arguments": {
+    "interaction_id": "interaction_id_from_research_start"
+  }
+}
+```
+
+Search completed reports:
+
+```json
+{
+  "tool": "research_search",
+  "arguments": {
+    "query": "vendor pricing",
+    "limit": 5
+  }
+}
+```
+
+## Security Model
+
+- No API keys, OAuth tokens, bearer tokens, `.env` files, local DBs, logs, caches, or tunnel credentials are committed.
+- `.env.example` contains variable names only.
+- Hosted HTTP mode requires `MCP_AUTH_TOKEN` and FastMCP bearer auth.
+- The service should bind to `127.0.0.1`; Cloudflare Tunnel or a reverse proxy handles public HTTPS.
+- The stdio proxy reads `GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION` from local secret storage and never embeds token values in MCP config files.
+- The stdio proxy requires HTTPS for remote endpoints and only allows plain HTTP for localhost development.
+- SQLite report history is private user data and is excluded from the repository.
 
 See [SECURITY.md](SECURITY.md).
 
-## Verification
+## Testing And Audit
 
 ```bash
+uv run python -m unittest discover -s tests
 scripts/verify.sh
 ```
+
+Useful public-release checks:
+
+```bash
+gitleaks protect --staged --redact --no-banner --source .
+git ls-files
+```
+
+## Deployment Shape
+
+The deployment examples in [deploy/](deploy/) assume:
+
+- Python service installed on a Linux host.
+- `MCP_HOST=127.0.0.1` so the service is not directly exposed.
+- Cloudflare Tunnel or Caddy terminates public HTTPS.
+- Server credentials are stored in environment files, `systemd-creds`, or another secret manager.
+- Local MCP clients use the stdio proxy and only store auth in local secret storage.
 
 ## License
 

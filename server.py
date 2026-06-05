@@ -43,11 +43,6 @@ from export import markdown_to_html, markdown_to_pdf_bytes, markdown_to_docx_byt
 
 load_dotenv()
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    print("FATAL: GEMINI_API_KEY not set in env", file=sys.stderr)
-    sys.exit(1)
-
 DEFAULT_TIER = os.environ.get("GEMINI_DEFAULT_TIER", "standard")
 AGENT_OVERRIDE = os.environ.get("GEMINI_AGENT_ID")
 
@@ -226,7 +221,23 @@ def _build_auth():
     return StaticTokenVerifier(tokens={token: {"client_id": "default", "scopes": ["research"]}})
 
 
-gemini = genai.Client(api_key=GEMINI_API_KEY)
+_gemini_client: Any | None = None
+
+
+def require_gemini_api_key() -> str:
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+    return key
+
+
+def get_gemini_client() -> Any:
+    global _gemini_client
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=require_gemini_api_key())
+    return _gemini_client
+
+
 mcp = FastMCP("gemini-deep-research", auth=_build_auth())
 
 # In-memory registry of jobs started via this server instance.
@@ -708,7 +719,11 @@ def research_start(
     if response_format:
         kwargs["response_format"] = response_format
 
-    interaction, err = _safe_api_call(gemini.interactions.create, **kwargs)
+    client, err = _safe_api_call(get_gemini_client)
+    if err:
+        return {**err, "hint": "Set GEMINI_API_KEY in the server environment before starting research."}
+
+    interaction, err = _safe_api_call(client.interactions.create, **kwargs)
     if err:
         return {**err, "hint": "Gemini API rejected the start request. Check server logs for details."}
 
@@ -761,7 +776,7 @@ def research_check(interaction_id: str) -> dict:
     Otherwise returns the current status so the caller can keep polling.
     """
     try:
-        interaction = gemini.interactions.get(interaction_id)
+        interaction = get_gemini_client().interactions.get(interaction_id)
     except Exception as exc:
         return {
             "status": "error",
@@ -801,7 +816,14 @@ def research_check(interaction_id: str) -> dict:
 def research_cancel(interaction_id: str) -> dict:
     """Cancel a running Deep Research job."""
     # Try SDK method name first, fall back to raw HTTP DELETE if method missing.
-    cancel_fn = getattr(gemini.interactions, "cancel", None)
+    try:
+        cancel_fn = getattr(get_gemini_client().interactions, "cancel", None)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error": f"Failed to initialize Gemini client: {exc}",
+            "interaction_id": interaction_id,
+        }
     if cancel_fn is None:
         return {
             "status": "error",
@@ -1268,6 +1290,12 @@ def _estimate_cost(usage_dict: dict | None) -> dict | None:
 # ── Entrypoint ─────────────────────────────────────────────────────────────
 
 def main():
+    try:
+        require_gemini_api_key()
+    except RuntimeError as exc:
+        print(f"FATAL: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     if transport == "stdio":
         mcp.run()

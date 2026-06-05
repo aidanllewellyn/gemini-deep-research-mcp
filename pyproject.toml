@@ -1,6 +1,6 @@
 [project]
 name = "mcp-gemini-deep-research"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server exposing Google Gemini Deep Research as tools for Claude and other MCP clients."
 requires-python = ">=3.11"
 readme = "README.md"

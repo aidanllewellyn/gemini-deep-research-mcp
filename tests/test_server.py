@@ -13,8 +13,7 @@ os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 os.environ["MCP_TRANSPORT"] = "stdio"
 os.environ["MCP_DB_PATH"] = str(Path(tempfile.mkdtemp()) / "jobs.db")
 
-with patch("google.genai.Client", return_value=SimpleNamespace()):
-    server = importlib.import_module("server")
+server = importlib.import_module("server")
 
 
 class FakeInteractions:
@@ -167,7 +166,7 @@ class ServerTest(unittest.TestCase):
             "schema": {"type": "object", "properties": {"summary": {"type": "string"}}},
         }
 
-        with patch.object(server, "gemini", fake_gemini):
+        with patch.object(server, "get_gemini_client", return_value=fake_gemini):
             result = server.research_start(
                 prompt="Summarize this.",
                 tier="standard",
@@ -184,6 +183,35 @@ class ServerTest(unittest.TestCase):
         self.assertIn(server.ALPHA_MARKER, fake_interactions.create_kwargs["input"])
         self.assertTrue(result["alpha_metadata"]["alpha_schema_applied"])
         self.assertTrue(result["alpha_metadata"]["response_format_passthrough_used"])
+
+    def test_research_start_reports_missing_api_key_without_calling_api(self):
+        old_key = os.environ.pop("GEMINI_API_KEY", None)
+        server._gemini_client = None
+        try:
+            result = server.research_start(
+                prompt="Summarize this.",
+                tier="standard",
+                user_confirmed=True,
+            )
+        finally:
+            if old_key is not None:
+                os.environ["GEMINI_API_KEY"] = old_key
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("GEMINI_API_KEY", result["error"])
+        self.assertIn("Set GEMINI_API_KEY", result["hint"])
+
+    def test_get_gemini_client_is_lazy_and_cached(self):
+        server._gemini_client = None
+        fake_client = SimpleNamespace(interactions=SimpleNamespace())
+
+        with patch.object(server.genai, "Client", return_value=fake_client) as client_ctor:
+            first = server.get_gemini_client()
+            second = server.get_gemini_client()
+
+        self.assertIs(first, fake_client)
+        self.assertIs(second, fake_client)
+        client_ctor.assert_called_once_with(api_key="test-key")
 
     def test_exhaustive_profile_requires_max_confirmation(self):
         result = server.research_start(
