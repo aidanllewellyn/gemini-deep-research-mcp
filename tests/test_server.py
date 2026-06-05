@@ -59,7 +59,9 @@ class ServerTest(unittest.TestCase):
         self.assertIn('"max_sources": 12', prompt)
         self.assertIn("Short markdown memo", prompt)
         self.assertIn("JSON-style decision object", prompt)
-        self.assertIn("Whether a Max run is justified and exactly what it should investigate", prompt)
+        self.assertIn(
+            "Whether a Max run is justified and exactly what it should investigate", prompt
+        )
         self.assertIn("decision_value", prompt)
         self.assertIn("<<<\nRank destination wedding locations.\n>>>", prompt)
 
@@ -78,10 +80,19 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(meta["decision_schema_required"])
 
     def test_infer_research_modes(self):
-        self.assertEqual(server.infer_research_mode("Need a vendor list with phone numbers"), "outreach_pack")
-        self.assertEqual(server.infer_research_mode("Deep dive with actual venues and pricing"), "deep_dive")
-        self.assertEqual(server.infer_research_mode("Build a competitor landscape"), "competitive_map")
-        self.assertEqual(server.infer_research_mode("Due diligence on regulatory high stakes risk"), "due_diligence")
+        self.assertEqual(
+            server.infer_research_mode("Need a vendor list with phone numbers"), "outreach_pack"
+        )
+        self.assertEqual(
+            server.infer_research_mode("Deep dive with actual venues and pricing"), "deep_dive"
+        )
+        self.assertEqual(
+            server.infer_research_mode("Build a competitor landscape"), "competitive_map"
+        )
+        self.assertEqual(
+            server.infer_research_mode("Due diligence on regulatory high stakes risk"),
+            "due_diligence",
+        )
         self.assertEqual(server.infer_research_mode("Compare options and rank them"), "screening")
 
     def test_opt_out_skips_wrapper(self):
@@ -113,7 +124,10 @@ class ServerTest(unittest.TestCase):
         )
 
         self.assertEqual(meta["applied_word_cap"], 777)
-        self.assertEqual(meta["applied_source_budget"], {"max_sources": 3, "max_searches": 2, "max_generic_sources": 0})
+        self.assertEqual(
+            meta["applied_source_budget"],
+            {"max_sources": 3, "max_searches": 2, "max_generic_sources": 0},
+        )
         self.assertFalse(meta["decision_schema_required"])
         self.assertIn("primary only", prompt)
         self.assertIn("forums", prompt)
@@ -246,6 +260,48 @@ class ServerTest(unittest.TestCase):
         )
 
         self.assertEqual(server._extract_interaction_text(interaction), "new steps report")
+
+    def test_pick_int_takes_first_numeric_alias(self):
+        usage = {"prompt_token_count": 1234, "candidates_token_count": 56}
+        # Aliases are tried in order; the first numeric match wins.
+        self.assertEqual(server._pick_int(usage, "input_tokens", "prompt_token_count"), 1234)
+        self.assertEqual(server._pick_int(usage, "output_tokens", "candidates_token_count"), 56)
+        # No alias present → 0, never KeyError.
+        self.assertEqual(server._pick_int(usage, "missing", "also_missing"), 0)
+        # Non-numeric values are skipped.
+        self.assertEqual(server._pick_int({"x": "not a number", "y": 7}, "x", "y"), 7)
+
+    def test_estimate_cost_precise_breaks_out_cached_and_output(self):
+        usage = {
+            "input_tokens": 100_000,
+            "cached_content_token_count": 40_000,
+            "output_tokens": 10_000,
+            "thoughts_token_count": 4_000,
+        }
+        cost = server._estimate_cost(usage)
+
+        # 60k uncached input @ $2/M + 40k cached @ $0.20/M + 10k output @ $12/M
+        self.assertEqual(cost["pricing_tier"], "standard (<=200k input)")
+        self.assertEqual(cost["breakdown"]["input_uncached"]["tokens"], 60_000)
+        self.assertEqual(cost["breakdown"]["input_cached"]["tokens"], 40_000)
+        self.assertAlmostEqual(cost["estimated_total"], 0.248, places=3)
+
+    def test_estimate_cost_uses_large_tier_above_200k(self):
+        cost = server._estimate_cost({"input_tokens": 250_000, "output_tokens": 1_000})
+        self.assertEqual(cost["pricing_tier"], "large (>200k input)")
+        self.assertEqual(cost["breakdown"]["input_uncached"]["rate_per_M"], 4.00)
+
+    def test_estimate_cost_falls_back_to_blended_rate_on_total_only(self):
+        cost = server._estimate_cost({"total_tokens": 1_000_000})
+        self.assertEqual(cost["mode"], "fallback_blended")
+        self.assertEqual(cost["total_tokens"], 1_000_000)
+        low, high = cost["estimated_range_usd"]
+        self.assertLess(low, high)
+
+    def test_estimate_cost_handles_empty_usage(self):
+        self.assertIsNone(server._estimate_cost(None))
+        self.assertIsNone(server._estimate_cost({}))
+
 
 if __name__ == "__main__":
     unittest.main()

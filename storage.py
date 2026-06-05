@@ -14,7 +14,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 DB_PATH = os.environ.get("MCP_DB_PATH", str(Path(__file__).parent / "data" / "jobs.db"))
 
@@ -145,9 +144,7 @@ def record_completion(
             "SELECT prompt FROM jobs WHERE interaction_id=?", (interaction_id,)
         ).fetchone()
         if row:
-            conn.execute(
-                "DELETE FROM reports_fts WHERE interaction_id=?", (interaction_id,)
-            )
+            conn.execute("DELETE FROM reports_fts WHERE interaction_id=?", (interaction_id,))
             conn.execute(
                 "INSERT INTO reports_fts(interaction_id, prompt, markdown) VALUES (?,?,?)",
                 (interaction_id, row["prompt"], markdown),
@@ -223,9 +220,7 @@ def job_count() -> dict[str, int]:
         conn = _connect()
         total = conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"]
         by_status: dict[str, int] = {}
-        for row in conn.execute(
-            "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
-        ):
+        for row in conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"):
             by_status[row["status"]] = row["c"]
         return {"total": total, "by_status": by_status}
 

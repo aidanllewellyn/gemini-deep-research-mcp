@@ -1,5 +1,6 @@
 # Gemini Deep Research MCP
 
+[![CI](https://github.com/aidanllewellyn/gemini-deep-research-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/aidanllewellyn/gemini-deep-research-mcp/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-%3E%3D3.11-3776ab)
 ![FastMCP](https://img.shields.io/badge/FastMCP-Streamable_HTTP-2f6fed)
 ![Auth](https://img.shields.io/badge/hosted_auth-Bearer_required-success)
@@ -28,6 +29,17 @@ MCP client
 - Markdown, HTML, PDF, and DOCX export helpers.
 - Lazy Gemini client initialization: imports and tests stay side-effect light, production startup still validates `GEMINI_API_KEY`.
 - Zero-cost `ping` and metadata tools that do not call Gemini.
+
+## Design Notes
+
+The non-obvious decisions, and why they were made:
+
+- **Cost is a first-class API contract.** Deep Research costs real money per run, so `research_start` *refuses to execute* until the caller passes an explicit `tier` and `user_confirmed=True`. The unconfirmed call returns the tier menu instead of running — the model can't quietly spend the user's budget.
+- **Prompt-enforced "high-alpha" wrapper.** A hardened wrapper imposes a research mode, word/source/search budgets, and a decision-object schema so reports come back as decision matrices rather than generic essays. It's idempotent (a marker prevents double-wrapping) and opt-out via `cost_guardrail`.
+- **Durable jobs, not fire-and-forget.** Every run is recorded in SQLite (WAL mode) with FTS5 over completed reports, so history, search, cost roll-ups, and follow-up chaining survive process restarts. The Gemini SDK doesn't have to expose a list endpoint for any of this to work.
+- **Prompt-injection guardrail on researcher input.** The user's topic is fenced in `<research_topic>` tags under a system directive that treats fenced text as data, not instructions — defense in depth for a tool that feeds arbitrary text to a web-browsing agent.
+- **Lazy client init.** The Gemini client is constructed on first use, not at import, so the module imports cleanly in tests and CI with no API key, while production startup still fails fast if `GEMINI_API_KEY` is missing.
+- **Best-effort cost estimation.** Background Deep Research jobs often return only `total_tokens`; the estimator computes a precise per-rate cost when the input/output split is present and falls back to a documented blended rate otherwise — always labelling which mode it used.
 
 ## One-Command Verification
 
@@ -190,8 +202,10 @@ See [SECURITY.md](SECURITY.md).
 ## Testing And Audit
 
 ```bash
+uv run ruff check .            # lint
+uv run ruff format --check .   # format check
 uv run python -m unittest discover -s tests
-scripts/verify.sh
+scripts/verify.sh             # all of the above, plus an optional live endpoint handshake
 ```
 
 Useful public-release checks:
@@ -210,6 +224,22 @@ The deployment examples in [deploy/](deploy/) assume:
 - Cloudflare Tunnel or Caddy terminates public HTTPS.
 - Server credentials are stored in environment files, `systemd-creds`, or another secret manager.
 - Local MCP clients use the stdio proxy and only store auth in local secret storage.
+
+## Repository Layout
+
+```text
+server.py          FastMCP server: 11 tools, tier/cost controls, prompt wrapper, cost estimator
+storage.py         SQLite persistence: jobs table + FTS5 search + chain traversal (WAL mode)
+export.py          Markdown → HTML / PDF / DOCX rendering
+canonical_style.css  Shared stylesheet for HTML/PDF export
+tests/             unittest suite: prompt wrapper, tier gating, cost math, text extraction
+scripts/
+  install-client.sh             Install the local stdio proxy for an MCP client
+  gemini-deep-research-mcp-stdio  The stdio↔HTTPS proxy itself
+  verify.sh                     ruff lint → format check → tests (+ optional live handshake)
+deploy/            Caddy, systemd unit, and Cloudflare Tunnel examples
+.github/workflows/ CI: ruff lint, format check, tests on Python 3.11 / 3.12 / 3.13
+```
 
 ## License
 

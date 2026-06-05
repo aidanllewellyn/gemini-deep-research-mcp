@@ -1,11 +1,20 @@
 """MCP server exposing Google Gemini Deep Research to any MCP client.
 
-Built on PrefectHQ/fastmcp v2 — supports Bearer auth and streamable HTTP natively.
+Built on FastMCP (fastmcp>=3) — supports Bearer auth and streamable HTTP natively.
 
 Tools:
-    research_start   — kick off an async research job (requires user_confirmed=True)
-    research_check   — poll a running job; returns markdown report if complete
-    research_cancel  — cancel a running job
+    research_start          — kick off an async research job (requires user_confirmed=True)
+    research_check          — poll a running job; returns markdown report if complete
+    research_cancel         — cancel a running job
+    research_list           — recent jobs from this process (zero Gemini cost)
+    research_history        — persisted job history across restarts (zero cost)
+    research_search         — FTS5 full-text search over completed reports (zero cost)
+    research_export         — export a report as markdown / HTML / PDF / DOCX (zero cost)
+    research_stats          — aggregate job counters (zero cost)
+    research_cost           — token usage + USD estimate for one job (zero cost)
+    research_usage_summary  — usage + cost rolled up across jobs (zero cost)
+    research_chain          — walk previous_interaction_id follow-up chains (zero cost)
+    ping                    — liveness, tier map, counters (zero cost)
 
 Transports:
     stdio (default)        — local Claude Desktop / Claude Code integration
@@ -35,11 +44,11 @@ import time
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from google import genai
 from fastmcp import FastMCP
+from google import genai
 
 import storage
-from export import markdown_to_html, markdown_to_pdf_bytes, markdown_to_docx_bytes
+from export import markdown_to_docx_bytes, markdown_to_html, markdown_to_pdf_bytes
 
 load_dotenv()
 
@@ -48,7 +57,7 @@ AGENT_OVERRIDE = os.environ.get("GEMINI_AGENT_ID")
 
 TIER_TO_AGENT = {
     "standard": "deep-research-preview-04-2026",
-    "max":      "deep-research-max-preview-04-2026",
+    "max": "deep-research-max-preview-04-2026",
 }
 
 SYSTEM_GUARDRAIL = """[SYSTEM SECURITY DIRECTIVE]
@@ -202,6 +211,7 @@ DEFAULT_AVOID_SOURCE_TYPES = [
 
 # ── Build auth for HTTP mode ───────────────────────────────────────────────
 
+
 def _build_auth():
     """Return a FastMCP auth provider for HTTP transport, or None for stdio."""
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
@@ -218,6 +228,7 @@ def _build_auth():
         sys.exit(1)
 
     from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
     return StaticTokenVerifier(tokens={token: {"client_id": "default", "scopes": ["research"]}})
 
 
@@ -249,6 +260,7 @@ _JOB_LOG_MAX = 100  # keep last N jobs
 
 # ── Tools ──────────────────────────────────────────────────────────────────
 
+
 def _safe_api_call(fn, *args, **kwargs):
     """Wrap SDK call, return either (result, None) or (None, error_dict)."""
     try:
@@ -265,22 +277,84 @@ def _as_list(values: list[str] | None, fallback: list[str]) -> list[str]:
     return values if values is not None else fallback
 
 
+def _pick_int(source: dict, *keys: str) -> int:
+    """Return the first key in `source` whose value is numeric, coerced to int.
+
+    Gemini usage objects vary in key naming across SDK/API versions
+    (e.g. ``input_tokens`` vs ``prompt_token_count`` vs ``promptTokenCount``),
+    so callers pass every known alias and take whichever lands first.
+    """
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, (int, float)):
+            return int(value)
+    return 0
+
+
 def infer_research_mode(prompt: str) -> str:
     p = prompt.lower()
 
-    if any(x in p for x in ["outreach", "contact", "email", "vendor list", "planner list", "inquiry", "phone", "quote request"]):
+    if any(
+        x in p
+        for x in [
+            "outreach",
+            "contact",
+            "email",
+            "vendor list",
+            "planner list",
+            "inquiry",
+            "phone",
+            "quote request",
+        ]
+    ):
         return "outreach_pack"
 
-    if any(x in p for x in ["due diligence", "investment", "acquisition", "legal risk", "regulatory", "high stakes"]):
+    if any(
+        x in p
+        for x in [
+            "due diligence",
+            "investment",
+            "acquisition",
+            "legal risk",
+            "regulatory",
+            "high stakes",
+        ]
+    ):
         return "due_diligence"
 
-    if any(x in p for x in ["deep dive", "diligence", "finalist", "verify", "actual venues", "pricing", "quote", "operational details"]):
+    if any(
+        x in p
+        for x in [
+            "deep dive",
+            "diligence",
+            "finalist",
+            "verify",
+            "actual venues",
+            "pricing",
+            "quote",
+            "operational details",
+        ]
+    ):
         return "deep_dive"
 
-    if any(x in p for x in ["competitor", "competitive", "market map", "landscape", "market research"]):
+    if any(
+        x in p for x in ["competitor", "competitive", "market map", "landscape", "market research"]
+    ):
         return "competitive_map"
 
-    if any(x in p for x in ["compare", "shortlist", "rank", "screen", "expansion", "options", "which one", "evaluate"]):
+    if any(
+        x in p
+        for x in [
+            "compare",
+            "shortlist",
+            "rank",
+            "screen",
+            "expansion",
+            "options",
+            "which one",
+            "evaluate",
+        ]
+    ):
         return "screening"
 
     return "screening"
@@ -293,9 +367,9 @@ def should_apply_alpha_wrapper(
 ) -> bool:
     if ALPHA_MARKER in prompt:
         return False
-    if isinstance(cost_guardrail, dict) and cost_guardrail.get("disable_alpha_wrapper"):
-        return False
-    return True
+    return not (
+        isinstance(cost_guardrail, dict) and bool(cost_guardrail.get("disable_alpha_wrapper"))
+    )
 
 
 def _default_budget_profile(research_mode: str, tier: str) -> str:
@@ -399,7 +473,9 @@ def _build_alpha_prompt(
         ],
         "custom": [],
     }
-    sections = required_sections if required_sections is not None else mode_defaults.get(research_mode, [])
+    sections = (
+        required_sections if required_sections is not None else mode_defaults.get(research_mode, [])
+    )
     schema = output_schema or (DEFAULT_DECISION_SCHEMA if decision_schema_required else None)
 
     lines = [
@@ -418,40 +494,50 @@ def _build_alpha_prompt(
     ]
     prefer = _as_list(prefer_source_types, DEFAULT_PREFER_SOURCE_TYPES)
     avoid = _as_list(avoid_source_types, DEFAULT_AVOID_SOURCE_TYPES)
-    lines.extend([
-        "Source policy:",
-        "- Prefer: " + "; ".join(prefer),
-        "- Avoid: " + "; ".join(avoid),
-    ])
+    lines.extend(
+        [
+            "Source policy:",
+            "- Prefer: " + "; ".join(prefer),
+            "- Avoid: " + "; ".join(avoid),
+        ]
+    )
     if sections:
         lines.extend(["", "Required sections: " + ", ".join(sections)])
     if cost_guardrail is not None:
         lines.extend(["", "Cost guardrail:", _json_block(cost_guardrail)])
 
-    lines.extend([
-        "",
-        "Required output:",
-        "1. Short markdown memo",
-        "2. Decision matrix",
-        "3. Factual evidence vs interpretation vs recommendation vs unknowns",
-        "4. Confidence and evidence quality",
-        "5. What would change the recommendation",
-        "6. Whether a Max run is justified and exactly what it should investigate",
-        "7. JSON-style decision object" if schema is not None else "7. Concise structured summary",
-    ])
-    if schema is not None:
-        lines.extend([
+    lines.extend(
+        [
             "",
-            "Use this JSON-style decision schema for the second output block:",
-            _json_block(schema),
-        ])
-    lines.extend([
-        "",
-        "Original user prompt:",
-        "<<<",
-        prompt,
-        ">>>",
-    ])
+            "Required output:",
+            "1. Short markdown memo",
+            "2. Decision matrix",
+            "3. Factual evidence vs interpretation vs recommendation vs unknowns",
+            "4. Confidence and evidence quality",
+            "5. What would change the recommendation",
+            "6. Whether a Max run is justified and exactly what it should investigate",
+            "7. JSON-style decision object"
+            if schema is not None
+            else "7. Concise structured summary",
+        ]
+    )
+    if schema is not None:
+        lines.extend(
+            [
+                "",
+                "Use this JSON-style decision schema for the second output block:",
+                _json_block(schema),
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Original user prompt:",
+            "<<<",
+            prompt,
+            ">>>",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -488,7 +574,9 @@ def _resolve_alpha_prompt(
     resolved_budget_profile = budget_profile or _default_budget_profile(str(inferred_mode), tier)
     resolved_word_cap = word_cap
     if resolved_word_cap is None:
-        resolved_word_cap = apply_budget_profile_to_word_cap(int(defaults["word_cap"]), resolved_budget_profile)
+        resolved_word_cap = apply_budget_profile_to_word_cap(
+            int(defaults["word_cap"]), resolved_budget_profile
+        )
 
     resolved_source_budget = source_budget
     if resolved_source_budget is None:
@@ -497,8 +585,12 @@ def _resolve_alpha_prompt(
             resolved_budget_profile,
         )
 
-    resolved_prefer = prefer_source_types if prefer_source_types is not None else DEFAULT_PREFER_SOURCE_TYPES
-    resolved_avoid = avoid_source_types if avoid_source_types is not None else DEFAULT_AVOID_SOURCE_TYPES
+    resolved_prefer = (
+        prefer_source_types if prefer_source_types is not None else DEFAULT_PREFER_SOURCE_TYPES
+    )
+    resolved_avoid = (
+        avoid_source_types if avoid_source_types is not None else DEFAULT_AVOID_SOURCE_TYPES
+    )
     if decision_schema_required is None:
         resolved_decision_schema_required = bool(defaults.get("decision_schema_required", False))
     else:
@@ -538,11 +630,7 @@ def _extract_text_from_content(content: Any) -> list[str]:
         return []
     if isinstance(content, (str, bytes)):
         return [content.decode() if isinstance(content, bytes) else content]
-    parts: list[Any]
-    if isinstance(content, list):
-        parts = content
-    else:
-        parts = [content]
+    parts: list[Any] = content if isinstance(content, list) else [content]
     text_parts: list[str] = []
     for part in parts:
         part_type = _get_field(part, "type")
@@ -721,11 +809,17 @@ def research_start(
 
     client, err = _safe_api_call(get_gemini_client)
     if err:
-        return {**err, "hint": "Set GEMINI_API_KEY in the server environment before starting research."}
+        return {
+            **err,
+            "hint": "Set GEMINI_API_KEY in the server environment before starting research.",
+        }
 
     interaction, err = _safe_api_call(client.interactions.create, **kwargs)
     if err:
-        return {**err, "hint": "Gemini API rejected the start request. Check server logs for details."}
+        return {
+            **err,
+            "hint": "Gemini API rejected the start request. Check server logs for details.",
+        }
 
     # Persist to SQLite (durable) + in-memory cache (fast)
     storage.record_start(
@@ -752,7 +846,9 @@ def research_start(
         **entry,
         "research_mode": alpha_metadata.get("inferred_research_mode", research_mode),
         "structured_output": {
-            "prompt_enforced": bool(output_schema or alpha_metadata.get("decision_schema_required")),
+            "prompt_enforced": bool(
+                output_schema or alpha_metadata.get("decision_schema_required")
+            ),
             "api_response_format_requested": bool(response_format),
             "response_format_passthrough_used": bool(response_format),
             "note": (
@@ -924,7 +1020,10 @@ def research_export(
     """
     job = storage.get_job(interaction_id)
     if job is None:
-        return {"status": "error", "error": f"No job with interaction_id={interaction_id} in persistent storage."}
+        return {
+            "status": "error",
+            "error": f"No job with interaction_id={interaction_id} in persistent storage.",
+        }
     if job["status"] != "completed":
         return {
             "status": "error",
@@ -1061,18 +1160,15 @@ def research_usage_summary(
         if not isinstance(usage, dict):
             continue
 
-        def pick(*keys):
-            for k in keys:
-                v = usage.get(k)
-                if isinstance(v, (int, float)):
-                    return int(v)
-            return 0
-
-        inp = pick("input_tokens", "prompt_token_count", "promptTokenCount")
-        cached = pick("cached_content_token_count", "cachedContentTokenCount", "cached_tokens")
-        out = pick("output_tokens", "candidates_token_count", "candidatesTokenCount")
-        think = pick("thoughts_token_count", "thoughtsTokenCount")
-        total = pick("total_tokens", "total_token_count", "totalTokenCount") or (inp + out)
+        inp = _pick_int(usage, "input_tokens", "prompt_token_count", "promptTokenCount")
+        cached = _pick_int(
+            usage, "cached_content_token_count", "cachedContentTokenCount", "cached_tokens"
+        )
+        out = _pick_int(usage, "output_tokens", "candidates_token_count", "candidatesTokenCount")
+        think = _pick_int(usage, "thoughts_token_count", "thoughtsTokenCount")
+        total = _pick_int(usage, "total_tokens", "total_token_count", "totalTokenCount") or (
+            inp + out
+        )
         usd = 0.0
         if isinstance(cost, dict):
             # Precise estimate
@@ -1092,8 +1188,15 @@ def research_usage_summary(
         t = row["tier"] or "unknown"
         bt = by_tier.setdefault(
             t,
-            {"jobs": 0, "input_tokens": 0, "input_cached": 0, "output_tokens": 0,
-             "thinking_tokens": 0, "total_tokens": 0, "estimated_cost_usd": 0.0},
+            {
+                "jobs": 0,
+                "input_tokens": 0,
+                "input_cached": 0,
+                "output_tokens": 0,
+                "thinking_tokens": 0,
+                "total_tokens": 0,
+                "estimated_cost_usd": 0.0,
+            },
         )
         bt["jobs"] += 1
         bt["input_tokens"] += inp
@@ -1169,7 +1272,7 @@ def _usage_to_dict(usage):
         except Exception:
             pass
     # Pydantic v1 / dataclass
-    if hasattr(usage, "dict") and callable(getattr(usage, "dict")):
+    if hasattr(usage, "dict") and callable(usage.dict):
         try:
             return usage.dict()
         except Exception:
@@ -1193,13 +1296,14 @@ def _usage_to_dict(usage):
 # Deep Research uses Gemini 3.1 Pro rates.
 # https://ai.google.dev/gemini-api/docs/pricing
 _PRICE_PER_M = {
-    "input_small":   2.00,   # prompts <= 200k
-    "input_large":   4.00,   # prompts >  200k
-    "output_small": 12.00,   # output (incl. thinking) for <= 200k prompts
-    "output_large": 18.00,   # output (incl. thinking) for >  200k prompts
-    "cached_small":  0.20,
-    "cached_large":  0.40,
+    "input_small": 2.00,  # prompts <= 200k
+    "input_large": 4.00,  # prompts >  200k
+    "output_small": 12.00,  # output (incl. thinking) for <= 200k prompts
+    "output_large": 18.00,  # output (incl. thinking) for >  200k prompts
+    "cached_small": 0.20,
+    "cached_large": 0.40,
 }
+
 
 def _estimate_cost(usage_dict: dict | None) -> dict | None:
     """Best-effort cost estimate from a usage dict.
@@ -1222,7 +1326,9 @@ def _estimate_cost(usage_dict: dict | None) -> dict | None:
         return None
 
     input_tokens = pick("input_tokens", "prompt_token_count", "promptTokenCount", "prompt_tokens")
-    output_tokens = pick("output_tokens", "candidates_token_count", "candidatesTokenCount", "completion_tokens")
+    output_tokens = pick(
+        "output_tokens", "candidates_token_count", "candidatesTokenCount", "completion_tokens"
+    )
     thoughts = pick("thoughts_token_count", "thoughtsTokenCount", "reasoning_tokens") or 0
     cached = pick("cached_content_token_count", "cachedContentTokenCount", "cached_tokens") or 0
     total = pick("total_tokens", "total_token_count", "totalTokenCount")
@@ -1277,10 +1383,22 @@ def _estimate_cost(usage_dict: dict | None) -> dict | None:
         "currency": "USD",
         "estimated_total": round(total_cost, 4),
         "breakdown": {
-            "input_uncached": {"tokens": billable_input, "rate_per_M": in_rate, "cost": round(input_cost, 4)},
-            "input_cached":   {"tokens": cached, "rate_per_M": cache_rate, "cost": round(cached_cost, 4)},
-            "output":         {"tokens": output_tokens, "rate_per_M": out_rate, "cost": round(output_cost, 4),
-                               "note": f"includes {thoughts} thinking tokens" if thoughts else None},
+            "input_uncached": {
+                "tokens": billable_input,
+                "rate_per_M": in_rate,
+                "cost": round(input_cost, 4),
+            },
+            "input_cached": {
+                "tokens": cached,
+                "rate_per_M": cache_rate,
+                "cost": round(cached_cost, 4),
+            },
+            "output": {
+                "tokens": output_tokens,
+                "rate_per_M": out_rate,
+                "cost": round(output_cost, 4),
+                "note": f"includes {thoughts} thinking tokens" if thoughts else None,
+            },
         },
         "pricing_tier": "large (>200k input)" if is_large else "standard (<=200k input)",
         "note": "Excludes Google Search grounding (~$14/1000 queries after 5k free/month). Excludes file-search or URL-context fees.",
@@ -1288,6 +1406,7 @@ def _estimate_cost(usage_dict: dict | None) -> dict | None:
 
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────
+
 
 def main():
     try:
@@ -1304,7 +1423,9 @@ def main():
         port = int(os.environ.get("MCP_PORT", "8000"))
         mcp.run(transport="http", host=host, port=port)
     else:
-        print(f"FATAL: unknown MCP_TRANSPORT={transport!r} (use 'stdio' or 'http')", file=sys.stderr)
+        print(
+            f"FATAL: unknown MCP_TRANSPORT={transport!r} (use 'stdio' or 'http')", file=sys.stderr
+        )
         sys.exit(2)
 
 

@@ -69,14 +69,15 @@ def markdown_to_docx_bytes(md_content: str, title: str = "Research Report") -> b
     """
     import io
     import re
+
     from docx import Document
     from docx.shared import Pt
 
     doc = Document()
     doc.add_heading(title, level=0)
-    doc.add_paragraph(
-        f"Generated {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
-    ).runs[0].font.size = Pt(9)
+    doc.add_paragraph(f"Generated {datetime.now().strftime('%B %d, %Y at %I:%M %p')}").runs[
+        0
+    ].font.size = Pt(9)
 
     # Very simple markdown-to-docx: handle headings, bullet lists, paragraphs.
     lines = md_content.splitlines()
@@ -93,9 +94,7 @@ def markdown_to_docx_bytes(md_content: str, title: str = "Research Report") -> b
             doc.add_paragraph(stripped[2:], style="List Bullet")
             continue
         if re.match(r"^\d+\.\s+", stripped):
-            doc.add_paragraph(
-                re.sub(r"^\d+\.\s+", "", stripped), style="List Number"
-            )
+            doc.add_paragraph(re.sub(r"^\d+\.\s+", "", stripped), style="List Number")
             continue
         doc.add_paragraph(stripped)
 

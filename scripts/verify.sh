@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+uv run ruff check .
+uv run ruff format --check .
 uv run python -m unittest discover -s tests
 
 if [ -n "${GEMINI_DEEP_RESEARCH_MCP_URL:-}" ] && [ -n "${GEMINI_DEEP_RESEARCH_MCP_AUTHORIZATION:-}" ]; then
